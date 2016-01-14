@@ -15,7 +15,20 @@ knitr::opts_chunk$set(echo = TRUE)
 
 This repository stores in-progress data resources for developing an Atlantis model for East Antarctica. 
 
-### Resources
+### Obtaining / synching / working with this repository
+
+1. With RStudio: 
+    + File/New Project/Version Control/Git
+    + Enter "https://github.com/AustralianAntarcticDivision/EastAntarctica_Atlantis.git"
+    + Click "Create Project"
+    + For updates click "Pull"
+2. With git on the command line: 
+    + `git clone https://github.com/AustralianAntarcticDivision/EastAntarctica_Atlantis.git`
+    + `cd EastAntarctica_Atlantis`
+    + For updates `git pull`
+3. Use the "Issues" feature on this page to make requests, report bugs etc. 
+
+## Resources
 
 We are using Manifold for now to modify input model topologies, via shapefiles. 
 
