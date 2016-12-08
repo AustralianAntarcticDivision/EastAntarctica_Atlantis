@@ -1,0 +1,1740 @@
+---
+title: "Atlantis running process"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: 
+      collapsed: true
+---
+
+# Setup libraries, directories and file names
+```{r}
+rm(list = ls())
+library(knitr)
+library(rgdal)
+library(plyr)
+library(ncdf4)
+toutinc = 30 # number of model days between outputs
+AGfile <- "AntarcticGroups.csv"
+bgmfile = 'Antarctica_28.bgm'
+biol.prm.old = 'SO28_biol_old.prm'
+run.prm.old = 'SO28_run_old.prm'
+wd = "~/East Antarctica"
+example.wd = "/home/shared/data/Atlantis/ncgen/atlantisNCGen/SETas_example/"
+ncgen.exec = "/home/shared/svn/atlantisNCGen/AtlantisNCGen"
+atlantis.exec = "/home/shared/svn/atlantis/atlantismain/atlantisMerged"
+AntGroups <- read.csv(AGfile)
+print(AntGroups)
+```
+
+#fillData.csv
+
+## Questions for clarification
+
+*1. does order of taxa/variables matter?*
+
+*2. what are the values?*
+
+## Description
+
+This file has default values to be filled in to the 'Box Layer Tracer CDF' files.  These are densities of nitrogen (and silica for diatoms) in a box (polygon) for lower trophic levels and, for vertebrates, the default numbers in each box, and the nitrogen content of an individual in total, along with the nitrogen in the skeleton (structural) and soft tissue (reserve) of the individuals.
+Some default information is also provided for other variables.
+
+The variable name comprises the 'Name' of the taxon + the cohort number + the extension relating to the variable.  The cohort number is immediately appended to the name while the variable extension is appended with an underscore separator.
+
+Variable name extensions are:
+
+_N       = mg N m<sup>-3</sup> for all taxa
+
+_StructN = nitrogen in the structure/skeleton of an individual
+
+_ResN    = nitrogen in the soft tissue (reserves) of an individual
+
+_Nums    = number of individuals in the box (polygon)
+
+
+
+Equation for converting body mass to nitrogen (L. Ramseyer (2002) Predicting Whole-Fish Nitrogen Content from Fish Wet Weight Using Regression Analysis. North American Journal of Aquaculture.  Vol 64, Issue 3.  pp. 195-204)
+
+$$ \rm{fish\ N\ g.}= 10^{1.03\ log_{10}(\rm{fish\ wet\ weight\ g}) - 1.65} $$
+
+##functions
+
+```{r}
+fn_vB<-function(Age,Param){Param$Linf*(1-exp(-Param$K*(Age-Param$t0)))}
+
+Nekton_nitrogen<-function(Group){
+  print(Group$Name)
+  Ages<-c(1:Group$Cohorts)
+  Len<-Group$LengthAtAge$fn(Ages,Group$LengthAtAge$params)
+  print ("Lengths at age")
+  print(Len)  
+  Weight<-Group$WtFromLen(Len)
+  print("Weights at age")
+  print(Weight)
+  NitrogenAtAge<-Group$N_from_Wt(Weight)
+  print("Nitrogen (mg) at age")
+  print(NitrogenAtAge)
+  N_div_Age<-cbind((NitrogenAtAge*Group$propN.Structure),(NitrogenAtAge*(1-Group$propN.Structure)))
+  return(N_div_Age)
+}
+
+# assumes a vector of wet weights and a nitrogen conversion factor for each weight 
+# and a proportion of N in skeleton
+Mass_nitrogen<-function(Group){
+  NitrogenAtAge<-Group$NfromWW*Group$propN.Structure
+  N_div_Age<-cbind((NitrogenAtAge*Group$propN.Structure),(NitrogenAtAge*(1-Group$propN.Structure)))
+  return(N_div_Age)
+}
+
+prev.ls = ls()
+
+```
+
+##water and nutrients
+
+```{r}
+water<-list(Name = "water"
+            ,var = c("")
+            ,val = c(1.0)
+)
+salt<-list(Name = "salt"
+           ,var = c("")
+           ,val = c(35.0)
+)
+Temp<-list(Name = "Temp"
+           ,var = c("")
+           ,val = c(.0)
+)
+Oxygen<-list(Name = "Oxygen"
+             ,var = c("")
+             ,val = c(.0)
+)
+NH3<-list(Name = "NH3"
+          ,var = c("")
+          ,val = c(.0)
+)
+NO3<-list(Name = "NO3"
+          ,var = c("")
+          ,val = c(.0)
+)
+MicroNut<-list(Name = "MicroNut"
+               ,var = c("")
+               ,val = c(.0)
+)
+DON<-list(Name = "DON"
+          ,var = c("")
+          ,val = c(.0)
+)
+Si<-list(Name = "Si"
+         ,var = c("")
+         ,val = c(.0)
+)
+Det_Si<-list(Name = "Det_Si"
+             ,var = c("")
+             ,val = c(.0)
+)
+Denitrifiction<-list(Name = "Denitrifiction"
+                     ,var = c("")
+                     ,val = c(.0)
+)
+Nitrification<-list(Name = "Nitrification"
+                    ,var = c("")
+                    ,val = c(.0)
+)
+Chl_a<-list(Name = "Chl_a"
+            ,var = c("")
+            ,val = c(.0)
+)
+```
+
+
+##light attributes
+
+```{r}
+Light<-list(Name = "Light"
+            ,var = c("")
+            ,val = c(.0)
+)
+lightAdaptn<-list(Name = "Light_Adaptn"
+                  ,var = c("_PL","_PS","_MB")
+                  ,val = c(15.0,15.0,15.0)
+)
+```
+
+
+##Ice biota
+
+```{r}
+
+# NOTE: IceBacteria not recognised by AtlantisNCGen, needs to be done post-process
+# IceBacteria<-list(Name = "Ice_Bacteria"
+#             ,var = c("_N")
+#             ,val = c(0.0)
+#             )
+IceDiatoms<-list(Name = "Ice_Diatoms"
+                 ,var = c("_N","_S")
+                 ,val = c(0.0,0.003) # test to stop nutrient limitation
+)
+IceMixotrophs<-list(Name = "Ice_Mixotrophs"
+                    ,var = c("_N")
+                    ,val = c(0.0)
+)
+IceZoobiota<-list(Name = "Ice_Zoobiota"
+                  ,var = c("_N")
+                  ,val = c(0.0)
+)
+```
+
+
+##Pelagic microbes/protists
+
+```{r}
+Coccolithophores<-list(Name = "Coccolithophores"
+                       ,var = c("_N")
+                       ,val = c(0.0)
+)
+Pelagic_Picophytoplankton<-list(Name = "Pelagic_Picophytoplankton"
+                                ,var = c("_N")
+                                ,val = c(0.0)
+)
+PelagicDiatoms<-list(Name = "Pelagic_Diatoms"
+                     ,var = c("_N","_S")
+                     ,val = c(0.0,0.003) # test to stop nutrient limitation
+)
+```
+
+
+##Pelagic zooplankton
+
+
+```{r}
+Microzooplankton<-list(Name = "Microzooplankton"
+                       ,var = c("_N")
+                       ,val = c(0.0)
+)
+Mesozooplankton<-list(Name = "Mesozooplankton"
+                      ,var = c("_N")
+                      ,val = c(0.0)
+)
+Macrozooplankton<-list(Name = "Macrozooplankton"
+                       ,var = c("_N")
+                       ,val = c(0.0)
+)
+Salps<-list(Name = "Salps"
+            ,var = c("_N")
+            ,val = c(0.0)
+)
+```
+
+
+##Benthos
+
+```{r}
+Benthos<-list(
+  Sedimentbacteria      = list(Name = "Sediment_bacteria"
+                               ,var = c("_N")
+                               ,val = c(0.0)
+  )
+  ,BenthicDepositfeeders = list(Name = "Benthic_Deposit_feeders"
+                                ,var = c("_N")
+                                ,val = c(0.0)
+  )
+  ,Macrobenthos          = list(Name = "Macrobenthos"
+                                ,var = c("_N")
+                                ,val = c(0.0)
+  )
+  ,BenthicFilterfeeders  = list(Name = "Benthic_Filter_feeders"
+                                ,var = c("_N")
+                                ,val = c(0.0)
+  )
+) # end benthos
+```
+
+
+
+##Nekton
+Krill, Fish_Pelagic, Fish_Mesopelagic, Toothfish, Icefish, Cephalopods
+
+```{r}
+Krill           <-list(Name = "Krill"
+                       ,var = c("_N")
+                       ,val = c(0.0)
+                       ,Cohorts = 6
+                       ,LengthAtAge = list(fn = fn_vB,params=list(Linf = 60, K=0.45, t0=0)) # vB + LWa,LWb - mm
+                       ,WtFromLen = function(Len){0.251E3*(3.02E-5*Len^2.62)-0.013}  # returns dry weight mg from length (Morris et al 1988) for females
+                       ,N_from_Wt = function(Wt){10^(-1.222+1.081*log10(Wt))} # Huntley et al (1994)  mg Nitrogen from dry weight (mg) using winter (note summer samples did not cover the range adequately)
+                       ,propN.Structure = 0.075 # from Nicol & Stolp 1989
+                       ,Nums_default=0
+                       ,ext = c("_StructN","_ResN","_Nums") # inverts aren't given Struct and Res Nitrogen values but renamed as fish
+)
+Krill<-c(Krill,list(N_div_Age = Nekton_nitrogen(Krill)))
+
+Fish_Pelagic      <-list(Name = "Fish_Pelagic"  # assumed to be Pleurogramma antarcticum - parameters based on Sutton & Horn 2011
+                         ,var = c("_N")
+                         ,val = c(0.0)
+                         ,Cohorts = 10
+                         ,LengthAtAge = list(fn = fn_vB,params=list(Linf = 221, K= 0.167, t0= -0.4)) # vB mm
+                         ,WtFromLen= function(Len){2.33E-7*Len^3.674}  # Wet weight (g) from Length (mm) for Pleurogramma antarcticum (Kunzmann 1986 - in Fishbase) 
+                         ,N_from_Wt = function(Wt){1E3*10^(1.03*log10(Wt)-1.65)} #  mg Nitrogen from weight (g)
+                         ,propN.Structure = 0.274
+                         ,Nums_default=0
+                         ,ext = c("_StructN","_ResN","_Nums")
+)
+Fish_Pelagic<-c(Fish_Pelagic,list(N_div_Age = Nekton_nitrogen(Fish_Pelagic)))
+
+
+Fish_Mesopelagic  <-list(Name = "Fish_Mesopelagic"
+                         ,var = c("_N")
+                         ,val = c(0.0)
+                         ,Cohorts = 4
+                         ,LengthAtAge = list(fn = fn_vB,params=list(Linf = 90, K=0.45, t0=0)) # vB (K adopted from krill, Linf is maximum length for E. carlsbergi)
+                         ,WtFromLen= function(Len){3.89E-5*Len^2.805}  # Wet weight (g) from Length (mm) for Protomyctophum thompsoni (Sinclair et al 2015 PLoS One)
+                         ,N_from_Wt = function(Wt){1E3*10^(1.03*log10(Wt)-1.65)} #  mg Nitrogen from Wet Weight (g) function from Ramseyer (2002)  
+                         ,propN.Structure = 0.274
+                         ,Nums_default=0
+                         ,ext = c("_StructN","_ResN","_Nums")
+)
+
+Fish_Mesopelagic<-c(Fish_Mesopelagic,list(N_div_Age = Nekton_nitrogen(Fish_Mesopelagic)))
+
+
+Toothfish        <-list(Name = "Toothfish"
+                        ,var = c("_N")
+                        ,val = c(0.0)
+                        ,Cohorts = 20
+                        ,LengthAtAge = list(fn = fn_vB,params=list(Linf = 2116, K=0.030, t0=-5.31)) # vB mm Ziegler et al 2015
+                        ,WtFromLen= function(Len){2.59E-6*Len^3.2064}  # g from mm
+                        ,N_from_Wt = function(Wt){1E3*10^(1.03*log10(Wt)-1.65)} #  mg Nitrogen from Wet Weight (g) function from Ramseyer (2002)  
+                        ,propN.Structure = 0.274 # currently a fixed proportion but could be size related - from Beth
+                        ,Nums_default    = 0
+                        ,ext = c("_StructN","_ResN","_Nums")
+)
+Toothfish<-c(Toothfish,list(N_div_Age = Nekton_nitrogen(Toothfish)))
+
+Icefish          <-list(Name = "Icefish"
+                        ,var = c("_N")
+                        ,val = c(0.0)
+                        ,Cohorts = 6
+                        ,LengthAtAge = list(fn = fn_vB,params=list(Linf = 438, K=0.379, t0=0.057)) # vB  mm  Welsford 2015
+                        ,WtFromLen= function(Len){8.123E-7*Len^3.34} # g from mm
+                        ,N_from_Wt = function(Wt){1E3*10^(1.03*log10(Wt)-1.65)} #  mg Nitrogen from Wet Weight (g) function from Ramseyer (2002)  
+                        ,propN.Structure = 0.274
+                        ,Nums_default=0
+                        ,ext = c("_StructN","_ResN","_Nums")
+)
+Icefish<-c(Icefish,list(N_div_Age = Nekton_nitrogen(Icefish)))
+
+Cephalopods      <-list(Name = "Cephalopods"
+                        ,var = c("_N")
+                        ,val = c(0.0)
+)
+#Cephalopods<-c(Cephalopods,list(N_div_Age = Mass_nitrogen(Cephalopods)))
+# TODO: add nitrogen info? line above tried to work out nitrogen without info
+```
+
+
+
+##Seals
+AntarcticFurSeal, ElephantSeal, CrabeaterSeal, LeopardSeal, OtherSeal
+
+```{r}
+AntarcticFurSeal<-list(Name = "Antarctic_Fur_Seal"
+                       ,var = c("_N")
+                       ,val = c(0.0)
+                       ,Cohorts = 10
+                       ,SizeAtAge = c()
+                       ,NfromWW = rep(NA,10)
+                       ,propN.Structure = 0.1
+                       ,Nums_default=0
+                       ,ext = c("_StructN","_ResN","_Nums")
+)
+AntarcticFurSeal <-c(AntarcticFurSeal,list(N_div_Age = Mass_nitrogen(AntarcticFurSeal)))
+
+ElephantSeal<-list(Name = "Elephant_Seal"
+                   ,var = c("_N")
+                   ,val = c(0.0)
+                   ,Cohorts = 10
+                   ,SizeAtAge = c()
+                   ,NfromWW = rep(NA,10)
+                   ,propN.Structure = 0.1
+                   ,Nums_default=0
+                   ,ext = c("_StructN","_ResN","_Nums")
+)
+ElephantSeal <-c(ElephantSeal,list(N_div_Age = Mass_nitrogen(ElephantSeal)))
+
+CrabeaterSeal<-list(Name = "Crabeater_Seal"
+                    ,var = c("_N")
+                    ,val = c(0.0)
+                    ,Cohorts = 10
+                    ,SizeAtAge = c()
+                    ,NfromWW = rep(NA,10)
+                    ,propN.Structure = 0.1
+                    ,Nums_default=0
+                    ,ext = c("_StructN","_ResN","_Nums")
+)
+CrabeaterSeal<-c(CrabeaterSeal,list(N_div_Age = Mass_nitrogen(CrabeaterSeal)))
+
+LeopardSeal<-list(Name = "Leopard_Seal"
+                  ,var = c("_N")
+                  ,val = c(0.0)
+                  ,Cohorts = 15
+                  ,SizeAtAge = c()
+                  ,NfromWW = rep(NA,15)
+                  ,propN.Structure = 0.1
+                  ,Nums_default=0
+                  ,ext = c("_StructN","_ResN","_Nums")
+)
+LeopardSeal<-c(LeopardSeal,list(N_div_Age = Mass_nitrogen(LeopardSeal)))
+
+OtherSeal<-list(Name = "Other_Seal"
+                ,var = c("_N")
+                ,val = c(0.0)
+                ,Cohorts = 10
+                ,SizeAtAge = c()
+                ,NfromWW = rep(NA,10)
+                ,propN.Structure = 0.1
+                ,Nums_default=0
+                ,ext = c("_StructN","_ResN","_Nums")
+)
+OtherSeal<-c(OtherSeal,list(N_div_Age = Mass_nitrogen(OtherSeal)))
+```
+
+
+##Penguins
+AdeliePenguin, EmperorPenguin, OtherPenguins
+
+```{r}
+AdeliePenguin<-list(Name = "Adelie_Penguin"
+                    ,var = c("_N")
+                    ,val = c(0.0)
+                    ,Cohorts = 15
+                    ,SizeAtAge = rep(5400,15) # g adult weight approximate average Emmerson et al 2014 - see SOKI (assume adult weight at one year)
+                    ,NfromWW = rep(NA,15)
+                    ,propN.Structure = 0.1
+                    ,Nums_default=0
+                    ,ext = c("_StructN","_ResN","_Nums")
+)
+AdeliePenguin<-c(AdeliePenguin,list(N_div_Age = Mass_nitrogen(AdeliePenguin)))
+
+EmperorPenguin<-list(Name = "Emperor_Penguin"
+                     ,var = c("_N")
+                     ,val = c(0.0)
+                     ,Cohorts = 10
+                     ,SizeAtAge = c(25000,rep(40000,9)) # g from SOKI - assumed adult weight at age 2 with weight at age 1 almost 2x at 150 days
+                     ,NfromWW = rep(NA,10)
+                     ,propN.Structure = 0.1
+                     ,Nums_default=0
+                     ,ext = c("_StructN","_ResN","_Nums")
+)
+EmperorPenguin<-c(EmperorPenguin,list(N_div_Age = Mass_nitrogen(EmperorPenguin)))
+
+OtherPenguins<-list(Name = "Other_Penguins"
+                    ,var = c("_N")
+                    ,val = c(0.0)
+                    ,Cohorts = 10
+                    ,SizeAtAge = rep(3500,10)  # taken from SOKI - macaroni/chinstrap equivalent
+                    ,NfromWW = rep(NA,10)
+                    ,propN.Structure = 0.1
+                    ,Nums_default=0
+                    ,ext = c("_StructN","_ResN","_Nums")
+)
+OtherPenguins <-c(OtherPenguins,list(N_div_Age = Mass_nitrogen(OtherPenguins)))
+```
+
+
+##Flying Birds
+Albatross, Skuas, OtherSeabirds
+
+```{r}
+Albatross<-list(Name = "Albatross"
+                ,var = c("_N")
+                ,val = c(0.0)
+                ,Cohorts = 20
+                ,SizeAtAge = c()
+                ,NfromWW = rep(NA,20)
+                ,propN.Structure = 0.1
+                ,Nums_default=0
+                ,ext = c("_StructN","_ResN","_Nums")
+)
+Albatross<-c(Albatross,list(N_div_Age = Mass_nitrogen(Albatross)))
+Skuas<-list(Name = "Skuas"
+            ,var = c("_N")
+            ,val = c(0.0)
+            ,Cohorts = 15
+            ,SizeAtAge = c()
+            ,NfromWW = rep(NA,15)
+            ,propN.Structure = 0.1
+            ,Nums_default=0
+            ,ext = c("_StructN","_ResN","_Nums")
+)
+Skuas<-c(Skuas,list(N_div_Age = Mass_nitrogen(Skuas)))
+OtherSeabirds<-list(Name = "Other_Seabirds"
+                    ,var = c("_N")
+                    ,val = c(0.0)
+                    ,Cohorts = 12
+                    ,SizeAtAge = c()
+                    ,NfromWW = rep(NA,12)
+                    ,propN.Structure = 0.1
+                    ,Nums_default=0
+                    ,ext = c("_StructN","_ResN","_Nums")
+)
+OtherSeabirds<-c(OtherSeabirds,list(N_div_Age = Mass_nitrogen(OtherSeabirds)))
+```
+
+
+##Baleen Whales
+MinkeWhales, OtherBaleenWhales
+
+```{r}
+MinkeWhales<-list(Name = "Minke_Whales"
+                  ,var = c("_N")
+                  ,val = c(0.0)
+                  ,Cohorts = 15
+                  ,SizeAtAge = rep(1.0E7,20) # g - Gales & Southwell - needs to be graded by age.
+                  ,NfromWW = rep(NA,15)
+                  ,propN.Structure = 0.1
+                  ,Nums_default=0
+                  ,ext = c("_StructN","_ResN","_Nums")
+)
+MinkeWhales<-c(MinkeWhales,list(N_div_Age = Mass_nitrogen(MinkeWhales)))
+OtherBaleenWhales<-list(Name = "Other_Baleen_Whales"   # humpback whales
+                        ,var = c("_N")
+                        ,val = c(0.0)
+                        ,Cohorts = 20
+                        ,SizeAtAge = rep(4.5E7,20) # g - Gales & Southwell - needs to be graded by age.
+                        ,NfromWW = rep(NA,20)
+                        ,propN.Structure = 0.1
+                        ,Nums_default=0
+                        ,ext = c("_StructN","_ResN","_Nums")
+)
+OtherBaleenWhales<-c(OtherBaleenWhales,list(N_div_Age = Mass_nitrogen(OtherBaleenWhales)))
+```
+
+
+##Toothed Whales
+OrcaA, OrcaB, OrcaC, Sperm_whales
+
+```{r}
+OrcaA<-list(Name = "Orca-A"
+            ,var = c("_N")
+            ,val = c(0.0)
+            ,Cohorts = 20
+            ,SizeAtAge = rep(3750E3,20) # g - average maximum size Leaper et al - needs to be graded by age. 
+            ,NfromWW = rep(NA,20)
+            ,propN.Structure = 0.1
+            ,Nums_default=0
+            ,ext = c("_StructN","_ResN","_Nums")
+)
+OrcaA<-c(OrcaA,list(N_div_Age = Mass_nitrogen(OrcaA)))
+OrcaB<-list(Name = "Orca-B"
+            ,var = c("_N")
+            ,val = c(0.0)
+            ,Cohorts = 20
+            ,SizeAtAge = rep(2200E3,20) # g - OrcaA scaled by approx 2/3 - needs to be graded by age. 
+            ,NfromWW = rep(NA,20)
+            ,propN.Structure = 0.1
+            ,Nums_default=0
+            ,ext = c("_StructN","_ResN","_Nums")
+)
+OrcaB<-c(OrcaB,list(N_div_Age = Mass_nitrogen(OrcaB)))
+OrcaC<-list(Name = "Orca-C"
+            ,var = c("_N")
+            ,val = c(0.0)
+            ,Cohorts = 20
+            ,SizeAtAge = rep(2200E3,20)  # g - Orca B
+            ,NfromWW = rep(NA,20)
+            ,propN.Structure = 0.1
+            ,Nums_default=0
+            ,ext = c("_StructN","_ResN","_Nums")
+)
+OrcaC<-c(OrcaC,list(N_div_Age = Mass_nitrogen(OrcaC)))
+Sperm_Whales<-list(Name = "Sperm_Whales"
+                   ,var = c("_N")
+                   ,val = c(0.0)
+                   ,Cohorts = 25
+                   ,SizeAtAge = rep(4E7,25) # g - Gales & Southwell average of male and female - needs to be graded by age.
+                   ,NfromWW = rep(NA,25)
+                   ,propN.Structure = 0.1
+                   ,Nums_default=0
+                   ,ext = c("_StructN","_ResN","_Nums")
+)
+Sperm_Whales<-c(Sperm_Whales,list(N_div_Age = Mass_nitrogen(Sperm_Whales)))
+```
+
+
+##Detritus and Carrion
+
+```{r}
+Refractory_Detritus<-list(Name = "Refractory_Detritus"
+                          ,var = c("_N")
+                          ,val = c(0.0)
+)
+Labile_Detritus<-list(Name = "Labile_Detritus"
+                      ,var = c("_N")
+                      ,val = c(0.0)
+)
+Carrion<-list(Name = "Carrion"
+              ,var = c("_N")
+              ,val = c(0.0)
+)
+```
+
+
+## Save to file
+```{r}
+# Krill, Fish_Pelagic, Fish_Mesopelagic, Toothfish, Icefish, Cephalopods
+#,AntarcticFurSeal, ElephantSeal, CrabeaterSeal, LeopardSeal, OtherSeal
+#,AdeliePenguin, EmperorPenguin, OtherPenguins
+#,Albatross, Skuas, OtherSeabirds
+#,MinkeWhales, OtherBaleenWhales
+#,OrcaA, OrcaB, OrcaC, Sperm_whales
+
+
+# keep track of "todo list" of variables that have been created 
+# but not written to file (excluding input-only variables)
+todo = setdiff(ls(), c(prev.ls, 'prev.ls'))#c('AGfile', 'AntGroups', 'a', 'd', 'g', 'fout', 'Group', 'Taxa', 'fn_vB', 'Mass_nitrogen', 'Nekton_nitrogen'))
+
+# open file to write
+fout <- file("fillData_Kaxis.csv", "w")
+
+# vertebrates with age and nitrogen structure (and Krill)
+Taxa<-list(Fish_Pelagic, Fish_Mesopelagic, Toothfish, Icefish, Krill)
+todo = setdiff(todo, unlist(lapply(Taxa, function(x) x$Name))) # remove from todo list
+
+for(d in 1:2){ # by extension values (first two only)
+  for (g in 1:length(Taxa)){ # for each taxon
+    Group<-Taxa[[g]] # extract group
+    for (a in 1:Group$Cohorts){ # for each cohort
+      cat(Group$Name,a,Group$ext[d],",",Group$N_div_Age[a,d],"\n", file = fout, sep = "")
+    }
+  }
+}
+
+# invertebrates with age structure and nitrogen
+# (no extension values, just _N)
+# adding StructN and ResN to give N (TODO: is this valid?)
+
+# Taxa <- list(Krill)
+# todo = setdiff(todo, unlist(lapply(Taxa, function(x) x$Name))) # remove from todo list
+# for (g in 1:length(Taxa)){ # for each taxon
+#   Group<-Taxa[[g]] # extract group
+#   for (a in 1:Group$Cohorts){ # for each cohort
+#     cat(Group$Name,"_N",a,",",sum(Group$N_div_Age[a,]),"\n", file = fout, sep = "")
+#   }
+# }
+
+# remaining variables with only Name, var and val fields
+has3 = names(which(sapply(todo, function(x) length(eval(parse(text = x)))) == 3))
+# add stuff within Benthos
+has3 = c(has3, paste('Benthos$', names(Benthos), sep=''))
+## remove all Ice stuff
+#has3 = has3[-grep("Ice", has3)]
+# remove Light adaptation (TODO: re-add?)
+# diatoms are in ice and ignored
+# picophytoplankton are specifically "pelagic", could be why not working?
+# microphytobenthos aren't specifically in the model
+has3 = has3[-grep("lightAdaptn", has3)]
+
+
+for (g in 1:length(has3))
+{
+  Group = eval(parse(text = has3[g]))
+  for (a in 1:length(Group$var))
+    cat(Group$Name, Group$var[a],",",Group$val[a],"\n", file = fout, sep = "")  }
+todo = setdiff(todo, c(has3, 'Benthos')) # remove from todo list
+
+```
+
+##Box Tracer general parameters
+copy these to the end of the file
+
+```{r}
+cat(
+  "Stress,0.00000000000000000000e+00
+DiagNGain,0.00000000000000000000e+00
+DiagNLoss,0.00000000000000000000e+00
+DiagNFlux,0.00000000000000000000e+00
+canyon,0
+dz,0
+eflux,0
+erosion_rate,0
+flat,0
+hdsink,0
+eddy,0
+numlayers,0
+reef,0
+hdsource,0
+nominal_dz,0
+sedbiodens,0
+sedbiodepth,0
+seddetdepth,0
+sedirrigenh,0
+sedoxdepth,0
+sedturbenh,0
+soft,0
+topk,0
+vflux,0
+porosity,0
+volume,0", 
+file = fout, sep = "")
+
+close(fout)
+
+```
+
+## Print remaining taxa to cover and show which fields contain NAs
+
+```{r}
+print(todo)
+
+for (i in 1:length(todo)){
+  Group = eval(parse(text = todo[i]))
+  cat(Group$Name, 
+      names(which(
+        lapply(Group, function(x) ifelse(is.null(x), FALSE, any(is.na(x)))) == TRUE)),
+      '\n')
+}
+
+```
+
+
+# boxLayerTracers
+
+Process for defining initial values for each functional group and writing to format required for boxLayerTracers.csv.
+
+## read functional groups definition as csv and polygons as shapefile
+```{r}
+groups <- read.csv(AGfile, stringsAsFactors = FALSE)
+
+bgm <- readOGR(dsn = ".", layer = strsplit(bgmfile, '.', fixed = TRUE)[[1]][1])
+```
+
+## Define function to allocate biomass to boxes and layers
+Creates a data frame with a row for each cohort in each polygon. *Taxa do not get rows if they do not occur in a polygon*.
+
+```{r}
+# depth layers (lower boundaries)
+maxz.layers <- c(-20,-50,-100,-200,-300,-400,-750,-1000,-2000,-Inf)
+maxz.layers <- c(rev(maxz.layers),0)
+
+# add layer thickness for distributing biomass
+build_dz <- function(z, zlayers = maxz.layers) {
+  if (length(z) > 1L) {
+    z <- z[1L]
+    warning("length of z is longer than 1, only the first element will be used")
+  }
+  layerindex <- findInterval(z, zlayers, rightmost.closed = TRUE) + 1L
+  
+  if (layerindex > length(zlayers)) stop("z is not in the intervals defined by zlayers")
+  startdz <- zlayers[layerindex] - z
+  out <- c(startdz, diff(zlayers[-seq(layerindex - 1)]))
+  rev(c(out, rep(0, (length(zlayers) - 1) - length(out))))
+}
+
+# modified layer thickness for dz and nominal_dz 
+#(reversed and adding 1 for sediment)
+build_dz_mod = function(z, zlayers = maxz.layers) c(rev(build_dz(z, zlayers)), 1)
+
+botz = bgm$botz
+
+zlayers <- data.frame(maxz = maxz.layers,
+                      zlayer.lab = paste0("zlayer", 1:length(maxz.layers)),
+                      dz = build_dz_mod(min(maxz.layers)),
+                      stringsAsFactors = FALSE)
+
+# TODO: consistent measure of area (SHAPE_Area is blank in current iteration)
+
+poly.sizes <- data.frame(poly_id = bgm[!bgm$boundary,]$box_id,
+                         area = sapply(1:28, function(i) bgm@polygons[[i]]@area)[!bgm$boundary], # area = bgm[!bgm$boundary,]$SHAPE_Area,
+                         depth = bgm[!bgm$boundary,]$botz)
+
+allocate_function <- function(name, default.density, surface.flag, forbid.poly, min.d=0, max.d=-Inf){
+  # divide abundance among cohorts and distribute across space
+  # NOTES 
+  # 1) abundance is currently distributed uniformly among cohorts, may want to do this according to mortality
+  # 2) all cohorts are currently distributed to all boxes - may want to build in flexibility to exclude some life stages from some boxes
+  # 3) there is no dealing with sediment
+  
+  the.group <- subset(groups, Name == name)
+  den.per.cohort <- default.density/the.group$NumCohorts # divide density by number of cohorts
+  # exclude forbidden polygons
+  if(length(forbid.poly)>0){the.polys <- poly.sizes[poly.sizes$poly_id %in% forbid.polys==FALSE,]}else{the.polys=poly.sizes} 
+  
+  # blank dataframe for taxon data (taxon, cohort, polygon, densities in layers)
+  td <- expand.grid(name, 1:the.group$NumCohorts, the.polys$poly_id )
+  zlayers.tmp <- data.frame(matrix(nrow=nrow(td), 
+                                   ncol=length(maxz.layers)))
+  td <- cbind(td, zlayers.tmp)
+  colnames(td)<- c("taxon", "cohort", "poly_id", zlayers$zlayer.lab)
+  
+  # subset to depth range
+  # make sure max and min depths are -ve
+  max.d <- -abs(max.d)
+  min.d <- -abs(min.d)
+  
+  # truncate max depth to shallower of max.d and the depth of the polygon
+  the.polys$max.d<- ifelse(max.d<poly.sizes$depth, poly.sizes$depth, max.d) 
+  
+  # distribute biomass   
+  # if surface only taxon, put all biomass in the surface layer, distributed among cohorts
+  if(surface.flag){td$zlayer1<- den.per.cohort}else{
+    # if not surface only taxon, distribute biomass evenly across depths and taxa, up to maximum depth of polygon
+    td<- ddply(td, .(poly_id),function(x){
+      the.poly<- the.polys[the.polys$poly_id==x$poly_id[1],]
+      # truncate to maximum depth of polygon
+      t.zlayers <- zlayers[1:max(which(zlayers$maxz > the.poly$max.d)),]
+      t.zlayers[which.min(t.zlayers$maxz),]$maxz <- the.poly$max.d[1] 
+      # fix dz for deepest (partial) layer
+      t.zlayers[which.min(t.zlayers$maxz),]$dz <- abs(rev(diff(t.zlayers$maxz))[1])
+      t.zlayers$z.prop<- t.zlayers$dz/sum(t.zlayers[is.finite(t.zlayers$dz),]$dz) # adjustment for relative thickness of layers
+      x[t.zlayers$zlayer.lab]<- data.frame(t(matrix(rep(den.per.cohort*t.zlayers$z.prop,nrow(x)), ncol=nrow(x)))) # fill (uses ugly transpose matrix method to fill row-wise)
+      x
+    })
+  }
+  td[is.na(td)]<- 0 # replace NAs with zeros
+  td$zlayer1[is.infinite(td$zlayer1)] = 1 # replace Inf with small
+  # adjust by polygon size (matched based on polygon ID)
+  td[,4:ncol(td)]<- td[,4:ncol(td)]*poly.sizes$area[match(td$poly_id, poly.sizes$poly_id)]
+  
+  td.for.export<- data.frame(taxon_cohort_Nums=paste0(td$taxon, td$cohort, "_Nums"), td[,3:ncol(td)])
+  
+  td.for.export
+}
+
+```
+
+
+## Set default densities and do allocations for each taxon
+```{r}
+# blank list for results: box layer traces list = blt.l
+blt.l <- list()
+```
+
+## Sperm whales
+Default density of sperm whales from SOKI link, assumed surface only.
+
+```{r}
+name <- "Sperm_Whales"
+default.density <- 0.001 # per km^2
+surface.flag <- 1
+forbid.poly <- c()
+
+spermwhale.rows <- allocate_function(name, default.density, surface.flag, forbid.poly)
+
+# append to list of results
+blt.l$spermwhales<- spermwhale.rows
+```
+
+## Other baleen whales
+Default density of other baleen whales from SOKI link, assumed surface only
+
+```{r}
+name <- "Other_Baleen_Whales"
+default.density <- 0.0094 # per km^2
+surface.flag <- 1
+forbid.poly <- c()
+
+otherbaleenwhale.rows <- allocate_function(name, default.density, surface.flag, forbid.poly)
+
+# append to list of results
+blt.l$otherbaleenwhales<- otherbaleenwhale.rows
+```
+
+## Minke Whales
+Default density of Minke whales from SOKI link, assumed surface only
+
+```{r}
+name <- "Minke_Whales"
+default.density <- 0.057 # per km^2
+surface.flag <- 1
+forbid.poly <- c()
+
+minkewhale.rows <- allocate_function(name, default.density, surface.flag, forbid.poly)
+
+# append to list of results
+blt.l$minkewhales<- minkewhale.rows
+```
+
+## Other seabirds
+Default density of other seabirds from SOKI link, assumed surface only
+
+```{r}
+name <- "Other_Seabirds"
+default.density <- 0.5305 #5.305 # per km^2 # decrease by factor of 10 for stability
+surface.flag <- 1
+forbid.poly <- c()
+
+otherseabird.rows <- allocate_function(name, default.density, surface.flag, forbid.poly)
+
+# append to list of results
+blt.l$otherseabirds<- otherseabird.rows
+```
+
+## Skuas
+Default density of Skuas from SOKI link, assumed surface only
+
+```{r}
+name <- "Skuas"
+default.density <- 0.035 # per km^2
+surface.flag <- 1
+forbid.poly <- c()
+
+skua.rows <- allocate_function(name, default.density, surface.flag, forbid.poly)
+
+# append to list of results
+blt.l$skuas<- skua.rows
+```
+
+## Albatross
+Default density of Albatross from SOKI link, assumed surface only
+
+```{r}
+name <- "Albatross"
+default.density <- 0.179 # per km^2
+surface.flag <- 1
+forbid.poly <- c()
+
+albatross.rows <- allocate_function(name, default.density, surface.flag, forbid.poly)
+
+# append to list of results
+blt.l$albatrosss<- albatross.rows
+```
+
+## Other penguins
+Default density of Other penguins from SOKI link, assumed surface only
+
+```{r}
+name <- "Other_Penguins"
+default.density <- 0.033 # per km^2
+surface.flag <- 1
+forbid.poly <- c()
+
+otherpenguin.rows <- allocate_function(name, default.density, surface.flag, forbid.poly)
+
+# append to list of results
+blt.l$otherpenguins<- otherpenguin.rows
+```
+
+## Emperor penguins
+Default density of Emperor penguins from SOKI link, assumed surface only
+
+```{r}
+name <- "Emperor_Penguin"
+default.density <- 0.098 # per km^2
+surface.flag <- 1
+forbid.poly <- c()
+
+emperorpenguin.rows <- allocate_function(name, default.density, surface.flag, forbid.poly)
+
+# append to list of results
+blt.l$emperorpenguins<- emperorpenguin.rows
+```
+
+## Adelie penguins
+Default density of Adelie penguins from SOKI link, assumed surface only
+
+```{r}
+name <- "Adelie_Penguin"
+default.density <- 0.384 # per km^2
+surface.flag <- 1
+forbid.poly <- c()
+
+adeliepenguin.rows <- allocate_function(name, default.density, surface.flag, forbid.poly)
+
+# append to list of results
+blt.l$adeliepenguins<- adeliepenguin.rows
+```
+
+## Other seals
+Default density of other seals from SOKI link, assumed surface only
+
+```{r}
+name <- "Other_Seal"
+default.density <- 0.04085 # per km^2
+surface.flag <- 1
+forbid.poly <- c()
+
+otherseal.rows <- allocate_function(name, default.density, surface.flag, forbid.poly)
+
+# append to list of results
+blt.l$otherseals<- otherseal.rows
+```
+
+## Leopard Seals
+Default density of Leopard Seals from SOKI link, assumed surface only
+
+```{r}
+name <- "Leopard_Seal"
+default.density <- 0.0061 # per km^2
+surface.flag <- 1
+forbid.poly <- c()
+
+leopardseal.rows <- allocate_function(name, default.density, surface.flag, forbid.poly)
+
+# append to list of results
+blt.l$leopardseals<- leopardseal.rows
+```
+
+## Crabeater Seals
+Default density of Crabeater Seals from SOKI link, assumed surface only
+
+```{r}
+name <- "Crabeater_Seal"
+default.density <- 0.7 # per km^2
+surface.flag <- 1
+forbid.poly <- c()
+
+crabeaterseal.rows <- allocate_function(name, default.density, surface.flag, forbid.poly)
+
+# append to list of results
+blt.l$crabeaterseals<- crabeaterseal.rows
+```
+
+## Elephant seals
+Default density of Elephant Seals from SOKI link, assumed surface only
+
+```{r}
+name <- "Elephant_Seal"
+default.density <- 0.04 # per km^2
+surface.flag <- 1
+forbid.poly <- c()
+
+elephantseal.rows <- allocate_function(name, default.density, surface.flag, forbid.poly)
+
+# append to list of results
+blt.l$elephantseals<- elephantseal.rows
+```
+
+## Antarctic fur seals
+Default density of antarctic fur seals from SOKI link, assumed surface only
+
+```{r}
+name <- "Antarctic_Fur_Seal"
+default.density <- 0.04 # per km^2
+surface.flag <- 1
+forbid.poly <- c()
+
+furseal.rows <- allocate_function(name, default.density, surface.flag, forbid.poly)
+
+# append to list of results
+blt.l$furseals<- furseal.rows
+```
+
+## Mesopelagic fish
+Default density of mesopelagic fishes from SOKI link, CHECK DEPTHS 
+
+```{r}
+name <- "Fish_Mesopelagic"
+default.density <- 1104 # per km^2
+surface.flag <- 0
+forbid.poly <- c()
+
+mesopelagicfish.rows <- allocate_function(name, default.density, surface.flag, forbid.poly)
+
+# append to list of results
+blt.l$mesopelagicfish<- mesopelagicfish.rows
+```
+
+
+## Once all taxa have been processed bind groups together for export as csv
+```{r}
+
+write.table(file="boxLayerTracers.csv", x=do.call(rbind.data.frame, blt.l), col.names = FALSE, row.names = FALSE, sep=",",quote=FALSE, dec=".")
+```
+
+## Calculate and append dz and nominal_dz info to file
+```{r}
+dztex <- sapply(seq(length(botz)), function(x) sprintf("dz,%i,%s", x-1, paste(build_dz_mod(botz[bgm$box_id == (x-1)]), collapse = ",")))
+ndztex <- sapply(seq(length(botz)), function(x) sprintf("nominal_dz,%i,%s", x-1, paste(ceiling(build_dz_mod(botz[bgm$box_id == (x-1)])), collapse = ",")))
+
+fout = file('boxLayerTracers.csv', 'at')
+writeLines(dztex, fout)
+writeLines(ndztex, fout)
+close(fout)
+```
+
+
+# Generate runParams and boxTracers
+
+```{r setup2, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Assuming that we have [boxLayerTracers](http://soki.aq/display/Projectd/Script+to+generate+boxLayerTracers) and [fillData](http://soki.aq/display/Projectd/Script+to+generate+fill+data) sorted out, this process sets up the *runParams.csv* file and then runs *atlantisNCGen* to generate an initial .nc file.
+
+## Set up working directories
+```{r}
+setwd(wd)
+```
+
+## Load the pre-existing groups file, the SETas example
+## and the boxLayerTracers file
+```{r}
+groups = read.csv(AGfile)
+exgroups = read.csv(paste(example.wd, 'SETasGroups.csv', sep = ''))
+blt = read.csv('boxLayerTracers.csv', header = FALSE)
+```
+
+## Strip out extra columns of AntarcticGroups
+```{r}                      
+# Load column names, then change one to fit with the example
+cg = colnames(groups)
+cg[cg == 'OverWinters'] = 'isOverWinter'
+colnames(groups) = cg
+
+# Load example column names, and change one to fit with our file
+# (so it won't be changed)
+ceg = colnames(exgroups)
+ceg[ceg == 'InvertType'] = 'GroupType'
+colnames(exgroups) = ceg
+
+# Strip out columns not in the example and write as a new csv
+groups = groups[,colnames(groups) %in% colnames(exgroups)]
+write.table(groups, file = 'fix AntarcticGroups.csv',
+            quote = FALSE, row.names = FALSE, sep = ',')
+```
+
+## Write runParams.csv and boxTracers file
+```{r}
+# parameters to put into file, TODO: hardcoded ones
+numsed = 1
+ndz = blt[blt[,1] == 'nominal_dz',] # strip out nominal_dz rows
+ndz = ndz[order(ndz[,2]), ] # order by ID
+if (!all(ndz[,2] == 0:(nrow(ndz)-1))) stop('badly formatted nominal_dz data in boxLayerTracers file')
+numlayers = apply(ndz[, -(1:2)], 1, function(x) sum(x>0)) - numsed
+numwc = max(numlayers)
+# write numlayers to boxTracers file (TODO: other 2D variables may need to be included later)
+write.table(cbind('numlayers', t(numlayers)), file = 'boxTracers.csv', row.names = FALSE, col.names = FALSE, sep = ',')
+
+# write runParams with above parameters and some hardcoded ones
+fout = file('runParams.csv', 'w')
+cat(sprintf("geometry %s\n", bgmfile), file = fout, sep = "")
+cat(sprintf("numwc %s\n", numwc), file = fout, sep = "")
+cat(sprintf("numsed %s\n", numsed), file = fout, sep = "")
+cat("track_atomic_ratio 0\n", file = fout, sep = "")
+cat("use_pHfiles 0\n", file = fout, sep = "")
+cat("num_active_habitats 1\n", file = fout, sep = "")
+
+# set ALL groups to size 10 (TODO: fix this)
+for (code in groups$Code)
+  cat(sprintf("%s_psize 10\n", code), file = fout, sep = "")
+
+cat("terrestrial_on 0\n", file = fout, sep = "")
+cat("track_rugosity_arag 0\n", file = fout, sep = "")
+cat("track_contaminants 0\n", file = fout, sep = "")
+
+close(fout)
+```
+
+# Compiling and running atlantisNCGen
+
+## Compiling atlantisNCGen
+[Download the newest subversion of *atlantisNCGen*](https://svnserv.csiro.au/svn/atlantis/AtlantisNCGen/trunk/atlantisNCGen/) and then open and build the Visual Studio 2012 solution file.
+
+*NOTE:* You will need to follow the instructions in https://confluence.csiro.au/display/Atlantis/Updating+Visual+Studio+include+and+library+folders to either make sure the folder is in the right place relative to Atlantis (though note that the Atlantis folder name will need to be **Atlantis2**) or change the linked location of the Atlantis folder. You will need to have NetCDF 4+DAP for 32 bit installed - instructions [here](https://confluence.csiro.au/display/Atlantis/NetCDF+4+in+Windows)
+
+## Running atlantisNCGen
+In the command prompt or terminal, set the working directory to where the files are held, then type (e.g.)
+
+*"C:/atlantis ncgen/Debug/atlantisNCGen.exe" -g "fix AntarcticGroups.csv" -o input.nc -r runParams.csv -f fillData_Kaxis.csv -b boxTracers.csv -l boxLayerTracers.csv*
+
+```{r}
+file.remove('input_old.nc') # remove any previous versions of NetCDF file (AtlantisNCGen will stop if already present)
+
+system2(ncgen.exec, "-g \"fix AntarcticGroups.csv\" -o input_old.nc -r runParams.csv -f fillData_Kaxis.csv -b boxTracers.csv -l boxLayerTracers.csv > log.txt 2> logerr.txt")
+```
+
+**NOTE: Sometimes atlantisNCGen seems to crash for no reason - to fix, try running it from Visual Studio in the debugger. Set the directory and arguments using *Debug --> atlantisNCGen Properties* **
+
+# Modify biol.prm
+```{r}
+X = readLines(biol.prm.old) # starting with 'old' version
+
+# TEMPORARY workaround for early crashes
+X[grep('RelTol', X)] = 'RelTol  999999'
+X[grep('Flux_tol', X)] = 'Flux_tol 999999'
+
+# move biomass to box 1 instead of box 0
+ii = grep(paste(c('^1', rep('0', 27)), collapse=' '), X)
+X[ii] = paste(c('0 1', rep('0', 26)), collapse=' ') 
+
+# look for lines with "habitat_" and the two lines following
+ii = grep('habitat_', X)
+ii = sort(c(ii, ii+1, ii+2))
+# pick out first and last
+ii.first = ii[1]
+ii.last = ii[length(ii)]
+# pick out species codes from start of file
+# Note: the numbers here are specific to this file
+codes = gsub(' ', '', substring(X[7:56], 35, 37))[1:43]
+verts = codes[-c(1:6, 30:31, 33:43)] # select vertebrate codes
+X = X[-(ii.first:ii.last)] # strip out habitat codes
+
+# re-add habitat codes, making all species present at all habitats
+X = c(X,
+      sprintf('habitat_%s  5\n1 1 1 1 1\n\n', codes)
+)
+
+# open Antarctic Groups file and set up juvenile/adult habitats for those with more than one cohort
+AG = read.csv(AGfile)
+for (testcode in codes){
+  if (AG$NumCohorts[AG$Code==testcode]>1)
+    X = c(X,
+          sprintf('juv_habitat_%s  5\n1 1 1 1 1\n\nad_habitat_%s  5\n1 1 1 1 1\n\n',testcode, testcode) 
+    )
+}
+
+# fix "BF max" typo to "BFmax" and also fill in BMmax values using BFmax values
+BFmax = grep('BF max', X)
+X = c(X[1:(BFmax-1)], gsub('BF max', 'BFmax', X[BFmax]), 
+      gsub('BF max', 'BMmax', X[BFmax]),
+      X[(BFmax+1):length(X)]
+)
+
+# set up adult and juvenile distributions evenly across the 24 non-boundary boxes
+dist.start = grep('XX_S1 ', X)
+dist = paste(c(0, rep(1/24, 24), rep(0, 3)), collapse=' ')
+X = c(X[1:(dist.start - 1)], sprintf('F%s_S1  28\n%s', codes, dist),
+      sprintf('F%s_S2  28\n%s', codes, dist),
+      sprintf('F%s_S3  28\n%s', codes, dist),
+      sprintf('F%s_S4  28\n%s', codes, dist),
+      sprintf('F%s_S1juv  28\n%s', codes, dist),
+      sprintf('F%s_S2juv  28\n%s', codes, dist),
+      sprintf('F%s_S3juv  28\n%s', codes, dist),
+      sprintf('F%s_S4juv  28\n%s', codes, dist),
+      X[(dist.start + 25):length(X)]
+)
+
+# add lines for mindepths and maxdepths as required (including default 100000 m(?) maxdepth for species), along with "min_li_mat", "pFCSE" and "PropCatch_SE" (whatever they are)
+X = c(X, 'PCO_mindepth 0', 'ZG_mindepth 0', 'PCO_maxdepth  5000',
+      'ZG_maxdepth  5000','IZ_maxdepth  5000', sprintf('%s_maxtotdepth 100000', codes), 
+      sprintf('min_li_mat_%s 0', codes),
+      paste(c('pFCSE 43\n', rep('0 ', 43)), collapse=''),
+      paste(c('PropCatch_SE 4\n', rep('0 ', 4)), collapse='')
+)
+
+# add length-weight relationship for inverts (which Atlantis now wants for some reason)
+# TODO: make proper estimate
+X = c(X, 'li_a_invert 0.01\nli_b_invert 3')
+
+# fix typos in k values (damping coefficient on detritus transferral and light absorption respectively)
+X = gsub('k_trans', 'k_trans_BF', X)
+X = gsub('k_IS', '\nk_IS', X)
+
+# fix typos in asssimilation efficiency
+donecodes = gsub(' ', '', substr(X[grep('EPlant_', X)], 8, 10))
+X = c(X, sprintf('EPlant_%s 0.0', codes[!(codes %in% donecodes)]))
+
+# add default values for flagSaltSensitive and salt_correction for all species
+X = c(X, sprintf('flagSaltSensitive_%s 0', codes))
+X = c(X, sprintf('salt_correction_%s 1.0', codes))
+
+# remove typo line for q10_method
+X = X[-grep('q10_method_BO', X)]
+
+# reformat mortality rates
+X = gsub('^mL_([^_]+)_T15', '\\1_mL', X)
+X = gsub('^mQ_([^_]+)_T15', '\\1_mL', X) # does this still work?
+
+# pick out species for which mL has been done (including ones just done)
+# and add mL lines (with value 0) for remaining species
+donecodes = gsub('_','',substr(X[grep('_mL', X)], 1, 3))
+X = c(X, sprintf('%s_mL 0.0', codes[!(codes %in% donecodes)]))
+# now go through and remove any lines that aren't actually in the list of species codes
+donecodes = gsub('_','',substr(X[grep('_mL', X)], 1, 3))
+X = X[-unlist(sapply(sprintf('^%s_mL', donecodes[!(donecodes %in% codes)]), function(x) grep(x, X)))]
+
+# similarly add mQ lines (value 0, 0) for ones not yet done
+donecodes = gsub('_','',substr(X[grep('_mQ', X)], 1, 3))
+X = c(X, sprintf('%s_mQ 2\n 0.0 0.0', codes[!(codes %in% donecodes)]))
+
+# add max_move_temp (value 30) for ones not yet done
+donecodes = gsub('_','',substr(X[grep('max_move_temp', X)], 1, 3))
+X = c(X, sprintf('%s_max_move_temp 30.0', codes[!(codes %in% donecodes)]))
+
+# add min_move_temp (value 30) for ones not yet done
+donecodes = gsub('_','',substr(X[grep('min_move_temp', X)], 1, 3))
+X = c(X, sprintf('%s_min_move_temp 30.0', codes[!(codes %in% donecodes)]))
+
+# add mindepth (value 30) for ones not yet done
+donecodes = gsub('_','',substr(X[grep('_mindepth', X)], 1, 3))
+X = c(X, sprintf('%s_mindepth 30.0', codes[!(codes %in% donecodes)]))
+
+# add maxdepth (value 30) for ones not yet done
+donecodes = gsub('_','',substr(X[grep('_maxdepth', X)], 1, 3))
+X = c(X, sprintf('%s_maxdepth 30.0', codes[!(codes %in% donecodes)]))
+
+# add maxtotdepth (value 30) for ones not yet done
+donecodes = gsub('_','',substr(X[grep('_maxtotdepth', X)], 1, 3))
+X = c(X, sprintf('%s_maxtotdepth 30.0', codes[!(codes %in% donecodes)]))
+
+# add flaglocalrecruit (value 0) for ones not yet done
+donecodes = gsub('_','',substr(X[grep('^flaglocalrecruit', X)], 1, 3))
+X = c(X, sprintf('flaglocalrecruit%s 0 0', codes[!(codes %in% donecodes)]))
+
+# add some required parameters for all species, as well as details for krill (mT) and
+# cephalopods (Time_Age)
+X = c(X, 
+      'mT_KR 1.0', 
+      sprintf('FSBDR_%s 0.2', codes), 
+      sprintf('FDGDL_%s 0.2', codes), 
+      sprintf('FDGDR_%s 0.2', codes),
+      # add only benthic species (species starting with B)
+      sprintf('%s_remin_contrib 0', codes[grep('^B', codes)]), 
+      sprintf('jack_a_%s 0', codes),
+      sprintf('jack_b_%s 0', codes),
+      sprintf('intersp_depend_recruit_%s 0', codes), 
+      sprintf('intersp_depend_sp_%s 0', codes),
+      sprintf('intersp_depend_scale_%s 0', codes),
+      sprintf('flagstocking%s 0', codes), 
+      sprintf('prop_spawn_lost_%s 0', codes), 
+      'Time_Age_CEP 2\n9 23'
+)
+
+# get rid of old "XX_recruit_hdistrib" and dist
+X = X[-(grep('^XX', X) + 0:1)] 
+
+# evenly distribute recruiting
+X = c(X, sprintf('%s_recruit_hdistrib 28\n%s', codes, dist))
+
+# add five empty water layers to vertical distributions, recruiting and stock structure
+ii = grep('^[^ ]*vert[^ ]*.*5', X)
+X[ii] = gsub("5", "10", X[ii])
+X[ii+1] = paste('0.0 0.0 0.0 0.0 0.0', X[ii+1])
+
+ii = grep('^VERT[^ ]*.*5', X)
+X[ii] = gsub("5", "10", X[ii])
+X[ii+1] = paste('0.0 0.0 0.0 0.0 0.0', X[ii+1])
+
+ii = grep('vdistrib', X)
+X[ii] = gsub("5", "10", X[ii])
+X[ii+1] = paste('0.0 0.0 0.0 0.0 0.0', X[ii+1])
+
+# special case - crabeater seals
+# was previously 3 2 1 1 1, too large (max must be number of stocks)
+ii = grep('SC_vert_stock_struct', X) 
+X[ii+1] = '0.0 0.0 0.0 0.0 0.0 1 1 1 1 1' 
+
+# remove all migration, changing number of age groups to 25 for each species to avoid crashing
+ii = grep('KMIG', X)[-1]
+X[ii] = gsub('[0-9]+', '25', X[ii])
+X[ii+1] = paste(rep('0.0', 25), collapse=' ')
+
+# for clearance rate for planktivorous fish (C_FP), replace 11 with 10 terms
+ii = grep('^C_FP', X)
+X[ii+1] = paste(strsplit(X[ii+1], ' ')[[1]][1:10], collapse = ' ') 
+
+# do same for growth rates
+ii = grep('^mum_FP', X)
+X[ii+1] = paste(strsplit(X[ii+1], ' ')[[1]][1:10], collapse = ' ')
+
+# find proportion of age spawning parameters
+ii = grep('^FSPB_[^ ]{2,3} ', X)
+# calculate size of cohort given in the same line
+cohort = as.integer(gsub('[^0-9]', '', X[ii]))
+# replace this size with 25, and fill out the data on the following line
+# with zeros
+X[ii] = gsub('[0-9]+', '25', X[ii])
+for (j in 1:length(ii))
+{
+  i = ii[j]
+  X[i+1] = paste(X[i+1], paste(rep('0.0', 25 - cohort[j]), collapse=' '), collapse=' ')
+}
+
+# Add numbers for proportion of ages spawning for krill
+# TODO: Get real proportions
+X = c(X, paste('FSPB_KR 25\n', paste(rep('0.5', 25), collapse=' '), collapse=''))
+
+# strip an extraneous zero from krill's prey information
+ii = grep('pPREY.KR.', X)+1
+X[ii] = gsub('(.*) 0', '\\1', X[ii], perl = TRUE)
+
+# add clearance rate for deposit feeders and macrobenthos
+# making it the same as for filter feeders (TODO: get real number)
+X = c(X, 'C_BD_T15         0.005')
+X = c(X, 'C_BM_T15         0.005')
+
+# get codes for primary producers 
+# (i.e. SM_PHY, LG_PHY, PHYTOBEN, MICROPHTYBENTHOS, DINOFLAG, SEAGRASS)
+primaries = AG$Code[AG$GroupType %in% c('SM_PHY', 'LG_PHY', 'PHYTOBEN', 'MICROPHTYBENTHOS', 'DINOFLAG', 'SEAGRASS')]
+# add estimates for primary producers
+X = c(X, 
+      sprintf('PBmax_D_%s 0.44', primaries), 
+      sprintf('Beta_D_%s 0.002', primaries))
+# add ice parameters for all species and general parameters
+# TODO: change these, are NOT VALID and are placeholder values
+# based on Beth's own notes in the CSIRO Atlantis wiki
+X = c(X, sprintf('ICE_KDEP_%s 1', codes))
+X = c(X,
+      'k_bs 15.0 m^-1 blue-green light attenuation per metre in snow.',
+      'k_bi 2.0 m^-1 blue-green light attenuation per metre in ice.',
+      'k_rs 35.0 m^-1 red light attenuation per metre in snow.',
+      'k_ri 4.0 m^-1 red light attenuation per metre in ice.',
+      'R_bi 0.5 fraction of photosynthetically available light in the blue-green region',
+      'albedo_ice 0.4 Walsh 0.7 or Grenfell & Perovich 1984 0.4',
+      'albedo_snow 0.6 Grenfell & Perovich 1984 0.6 to 0.81',
+      'ka_star 0.03 Soohoo 1987 (neglects wavelength dependence)',
+      'p_IBice 0.9 Prop. of ice. bacteria taken when detrit eaten in wc 0.6 - 1',
+      'k_ice 0.45')
+X = c(X, sprintf('ice_hab_%s 1\n1', codes), sprintf('ice_reprod_hab_%s 1\n1', codes))
+
+# select mortality coefficients for Adelie/emperor penguins (code starting with PN)
+# change '3' to '2' in the number of elements reported
+# then remove the last number in the following line
+ii = grep('PN._m. ', X)
+X[ii] = gsub('3', '2', X[ii])
+X[ii+1] = gsub('(.*) [0-9e\\-\\+\\.]*', '\\1', X[ii+1], perl = TRUE)
+
+# pick out lines that don't start with a # (i.e. aren't comments)
+no.comment = grep('^[^#]', X)
+# pick out everything mentioning krill (KR) or planktivorous fish (FP) that isn't a comment
+FP.stuff = grep('FP[^A-Z0-9]', X)
+FP.stuff = FP.stuff[FP.stuff %in% no.comment]
+KR.stuff = grep('KR[^A-Z0-9]', X)
+KR.stuff = KR.stuff[KR.stuff %in% no.comment]
+
+# find parameter (first word) of every line mentioning planktivorous fish (FP) in the file
+# and work out which lines DON'T correspond to the same parameter in KR
+ii = which(!(
+  gsub('FP', 'KR', gsub('([^\\s]*)[\\s]*.*', '\\1', X[FP.stuff], perl = TRUE)) %in% 
+    gsub('([^\\s]*)[\\s]*.*', '\\1', X[KR.stuff], perl = TRUE)))
+# copy lines that don't already exist for KR but do in FP
+# into a new line but with KR
+X = c(X, gsub('FP', 'KR', X[FP.stuff][ii]))
+
+# remove mortality due to implicit fish and seabird/mammals for krill
+X = X[-grep('mS_FDKR', X)]
+X = X[-grep('mS_SBKR', X)]
+
+# write updated biol.prm file
+writeLines(X, 'SO28_biol.prm')
+
+#stop('stop')
+
+W = readLines(run.prm.old)
+W[grep('init_scalar[ ]*41', W)] = sprintf('init_scalar 43\n%s', paste(rep('1', 43), collapse=' '))
+W = c(W, 'check_dups 0')
+#W = gsub('verbose[ ]*0', 'verbose 3', W) # lots of output for debugging
+W = gsub('toutinc[ ]*[0-9]* day', sprintf('toutinc %d day', toutinc), W) # more regular output (toutinc defined at top)
+writeLines(W, 'SO28_run.prm')
+```
+
+# Update NetCDF initial conditions file
+
+```{r}
+N = 28
+system(sprintf('ncdump "%s/input_old.nc" > "%s/input.cdf"', getwd(), getwd()))
+V = readLines('input.cdf')
+V = gsub('water(t, b, z)', 'water(t, b, iz)', V)
+ii = grep('[^A-Za-z]z =', V)
+V[ii] = paste(V[ii], '\n\tiz = 1;\n\ticenz = 1;', collapse='') # add iz and icenz to dimensions
+ii = grep('sednz', V)
+V[ii] = paste(V[ii], '\n\t:icenz = 1 ;', collapse='') # add icenz to global attributes
+
+ii = grep('double (?!Ice_)(.*)\\(.*\\).*;', V, perl = TRUE) # everything but ice based
+V[ii] = gsub('double (.*)\\((.*)\\).*;',
+             'double \\1\\(\\2\\) ;\n\t\\1:inice = 0;',
+             V[ii])
+
+# set up Ice_Bacteria because AtlantisNCGen won't <sigh>
+ii = grep('Pelagic_Bacteria_N[^ ]+', V) # everything but the values
+VIB = V[ii]
+VIB = gsub('Pelagic', 'Ice', VIB)
+V = V[-grep('}', V)]
+V = c(V[1:max(ii)], VIB, V[-(1:max(ii))], 'Ice_Bacteria_N = ', paste(paste(rep('0', N), collapse=', '), ';', sep=''), '}')
+
+ii = grep('double Ice_', V)
+V[ii] = sub('z', 'icenz', V[ii])
+ii = grep('Ice_.*bmtype', V)
+V[ii] = gsub('Ice_(.*):bmtype = \"tracer\" ;', # icetracer means ice-ONLY 
+             'Ice_\\1:bmtype = \"icetracer\" ;\nIce_\\1:inice = 1 ;',
+             V[ii])
+ii = grep('Ice_.*:inwc = 1 ;', V)
+V[ii] = gsub('Ice_(.*):inwc = 1 ;', 'Ice_\\1:inwc = 0 ;', V[ii])
+ii = grep('Ice_.*:insed = 1 ;', V)
+V[ii] = gsub('Ice_(.*):insed = 1 ;', 'Ice_\\1:insed = 0 ;', V[ii])
+
+ii = grep('Ice_[^B][^:]*=', V) # everything but Bacteria which is fine (fixing dimensions)
+ij = grep('=', V)
+ij = sapply(ii, function(x) min(ij[ij > x]))
+ik = NULL
+for (i in 1:length(ii)) ik = c(ik, (ii[i]+2):(ij[i]-1))
+V[ii+1] = paste(paste(rep('0.', N), collapse=', '), ';', sep='')
+V = V[-ik]
+
+ii = grep('[^_]dz', V)
+ii = ii[-length(ii)]
+Vice = V[ii]
+Vice = gsub('dz', 'ice_dz', Vice)
+Vice = gsub('inice = 0[ ]*;', 'inice = 1 ;\n\tice_dz:inwc = 0 ;\n\tice_dz:insed = 0 ;', Vice)
+Vice = gsub(', z', ', icenz', Vice)
+V = c(V[1:max(ii)], Vice, V[-(1:max(ii))])
+V = c(V[-length(V)], '\n ice_dz = ',  paste(paste(rep('1', N), collapse=', '), '; \n', sep=''), V[length(V)]) # keep closing bracket last
+
+#V = gsub('ice_dz:bmtype = "phys"', 'ice_dz:bmtype = "icetracer"', V)
+V = gsub('double ice_dz\\(t, b, icenz\\)', 'double ice_dz\\(b, icenz\\)', V)
+
+
+# # replace all zeroes with ones (doesn't get '0.' values though)
+defs = (ii <- grep('=', V))[ii > grep('data', V)]
+numsdefs = (ii <- grep('(Nums|ResN|StructN|_N|_S) =', V))[ii > grep('data', V)]
+ii = which(defs %in% numsdefs)
+d = diff(rbind(defs[ii], defs[ii+1])) - 1
+
+dead = NULL
+l = NULL
+for (i in 1:length(ii))
+  if (length(grep('[1-9\\_]', V[(defs[ii[i]]+1):(defs[ii[i]+1]-1)]))==0)
+  {
+    dead = c(dead, i)
+    l = c(l, sum(unlist(gregexpr(',', V[defs[ii[i]]:defs[ii[i]+1]]))>0)+1)
+  }
+# V[defs[ii[i]]:defs[ii[i]+1]] = gsub('([^0-9])0[ ]*([,;])', '\\11\\2', V[defs[ii[i]]:defs[ii[i]+1]])
+
+for (i in 1:length(dead))
+{
+  
+  if (length(grep('Nums', V[defs[ii[dead[i]]]]))>0)
+    if (length(grep('Krill', V[defs[ii[dead[i]]]]))>0)
+      nset = 1e15
+    else
+      nset = 1e6
+    else
+      nset = 1
+    
+    if (l[i]==28)
+    {
+      #V = c(V[1:defs[ii[dead[i]]]], paste(c('0, 1000000, ', rep('0, ', 25), '0;'), collapse=''), V[defs[ii[dead[i]]+1]:length(V)])
+      V = c(V[1:defs[ii[dead[i]]]], paste(c('0, ', rep(sprintf('%s, ',nset), 24), '0, 0, 0;'), collapse=''), V[defs[ii[dead[i]]+1]:length(V)])
+      defs = defs + 1 - d[dead[i]]
+    }
+    else
+    {
+      V = c(V[1:defs[ii[dead[i]]]], 
+            #          c(paste(rep('0, ', 11), collapse=''), paste(rep('1000000, ', 11), collapse=''), rep(paste(rep('0, ', 11), collapse=''), 25), paste(c(rep('0, ', 10), '0;'), collapse='')),
+            c(paste(rep('0, ', 11), collapse=''), rep(paste(rep(sprintf('%s, ',nset), 11), collapse=''), 24), rep(paste(rep('0, ', 11), collapse=''), 2), paste(c(rep('0, ', 10), '0;'), collapse='')),
+            V[defs[ii[dead[i]]+1]:length(V)])
+      defs = defs + 28 - d[dead[i]]
+    }
+    
+}
+
+
+writeLines(V, 'input.cdf')
+system(sprintf('ncgen -o "%s/input.nc" "%s/input.cdf"', getwd(), getwd()))
+
+system(sprintf('ncdump "%s/input.nc" > "%s/input_new.cdf"', getwd(), getwd()))
+
+Y = nc_open('input.nc', write = TRUE)
+Z = read.csv('boxLayerTracers.csv', header = FALSE)
+Zndz = Z[grep('nominal_dz', Z$V1),]
+numlayers = as.numeric(apply(Zndz[,-(1:2)]!=0, 1, sum))-1
+numlayers[Zndz$V2+1] = numlayers
+ncvar_put(Y, 'numlayers', numlayers)
+nc_close(Y)
+
+```
+
+# Additional stuff not mentioned
+CHANGED ALL VERTEBRATES TO 1 FOR VERTICAL MOVEMENT IN GROUPS CSV FILE
+
+CHANGED A BUNCH OF FILL VALUES
+
+CHANGED KRILL CLASS FROM LG_PHY TO FISH
+
+Removed Ice_Bacteria_N from filldata (fix markdown)
+
+CHANGED NO3 DECAY TO 1e-9
+
+REMOVED SETTLING
+
+KILLED BALEEN
+
+##ADDED TO FORCE
+inputs_tout 1
+
+nInceFiles 1
+
+Ice0.name ice.nc
+
+##ADDED TO PHYSICS
+maxicedz 15
+
+minicedz 5
+
+num_ice_classes 1
+
+slush 1
+
+kind_ice_model 1
+
+
+# Run Atlantis
+```{r}
+system2(atlantis.exec, "-i input.nc 0 -o output.nc -r SO28_run.prm -f SO28_forcedummy.prm -p SO28_physics.prm -b SO28_biol.prm -h SO28_harvest_nofishing.prm -s AntarcticGroups.csv -d \"output\" > log.txt 2> logerr.txt", wait = FALSE)
+```
+
+# Extra diagnostic stuff
+```{r}
+# library(ncdf4)
+# O = nc_open('output/output.nc')
+# Ovars = sapply(1:O$nvars, function(x) O$var[[x]]$name)
+# grep('Orca-C1', Ovars)
+# test = ncvar_get(O, O$var[[844]]$name)
+# test[6,12,]
+# 
+# test = ncvar_get(O, O$var[[50]]$name)
+# plot(test[6,12,])
+# 
+# #L = readLines('output/log.txt')
+# L = readLines('C:/Users/beetonn/Desktop/log.txt')
+# 
+# #ii = grep('Time: [0-9\\.e+-]+, species WHC', L)
+# ii = grep('WHC-0.*StartDay', L)
+# length(ii)
+# L[ii]
+```
+
+# Deal with Atlantis output
+```{r}
+library(ncdf4)
+library(shiny)
+palette(sample(rainbow(72)))
+#O = nc_open('output/output.nc')
+if (file.exists('output/outputTOT.nc'))
+{
+  file.copy('output/outputTOT.nc', 'output/outputTOTcopy.nc', overwrite = TRUE) # make a copy because reading outputTOT.nc can accidentally stop Atlantis process
+  O = nc_open('output/outputTOTcopy.nc')
+  Ovars = sapply(1:O$nvars, function(x) O$var[[x]]$name)
+  #for (i in 1:length(Ovars)) print(cat(Ovars[i], dim(ncvar_get(O, Ovars[i]))))
+  tmp <- ncvar_get(O, O$var[[22]]$name)
+  Nt = ncol(tmp)
+  mat = matrix(NA, 57-5+1, Nt)
+  for (i in 5:57) mat[i-4,] = (tmp <- ncvar_get(O, O$var[[i]]$name)[2,])
+  names = Ovars[5:57]
+  time = (0:(Nt-1))*toutinc/365
+  
+  shinyApp(
+  ui = fluidPage(
+    titlePanel("Atlantis output - biomass"),
+    sidebarLayout(
+      sidebarPanel(
+        selectInput("codes", "Codes", names, selected = names, multiple = TRUE, size = 10, selectize = FALSE),
+        checkboxInput("log", "Log scale", TRUE)
+      ),
+      mainPanel(plotOutput("biomass"))
+    )
+  ),
+  server = function(input, output, session) {
+    output$biomass = renderPlot({
+      mss = mat[which(names %in% input$codes),,drop=FALSE]
+      if (!all(mss == 0))
+      {
+        R = range(mss)
+        if (diff(R)==0) R = min(R) + c(0,1)
+        if (input$log) R[R==0] = min(mss[mss>0])
+        matplot(time, t(mss), pch=19, log=ifelse(input$log, 'y', ''), col = 1:ncol(mss), xlab = 'Years', ylab = 'Biomass', ylim = R)
+      }
+      else
+      {
+        plot(c(0,max(time)), c(0,1), type='n', xlab = 'Years', ylab = 'Biomass')
+        text(0.5*max(time), 0.5, 'Zero biomass at all times')
+      }
+      
+      legend("right", input$codes, pch=19, col = 1:ncol(mss), cex=0.5)
+    })
+  }
+)
+  
+  #matplot(t(mat), pch = c(64 + (1:26), 96 + (1:26), 19), log='y')
+  # matplot(t(mat/mat[,Nt]), pch = c(64 + (1:26), 96 + (1:26), 19), log='y')
+  # print(Nt)
+}
+#species = ncvar_get(O, O$var[[5]]$name)
+#matplot(t(species))
+
+# plot(mat[28,], type='o') # krill
+# 
+# 
+# spike = rep(NA, 53)
+# for (i in 1:53) spike[i] = max(abs(diff(log10(mat[i,-1]))))
+# cbind(c(LETTERS, letters, '1'), Ovars[5:57], spike)
+# 
+# # check prey relationships
+# X = readLines('SO28_biol.prm')
+# AG = read.csv('AntarcticGroups.csv')
+# ii = grep('pPREY', X)[-(1:2)]
+# #unlist(lapply(strsplit(X[ii+1], ' '), length))
+# prey = unlist(lapply(strsplit(X[ii+1], ' '), function(x) paste(as.character(AG$Code[which(x!='0')]), collapse = ' ')))
+# paste(gsub('pPREY(.*) 46', '\\1', X[ii], perl = TRUE), 'preys on', prey)
+# 
+# #which stuff dies (krill only one not starting dead)
+# dead = Ovars[5:57][unique(which(mat == 0, arr.ind = TRUE)[,1])]
+# dead = gsub('(.*)_.*', '\\1', dead, perl = TRUE)
+# dead.code = unlist(sapply(1:21, function(i) which(AG$Name == dead[i])))
+# print(AG$Code[dead.code])
+# rbind(Ovars[5:57][order(mat[,Nt])], order(mat[,Nt]), log10(sort(mat[,Nt])))
+#
+## Plot each species individually 
+# for (i in 5:57){plot(mat[i-4,1:300], type='o', main = Ovars[i]); abline(v = 150); Sys.sleep(1)}
+# 
+#
+## Try using vadt for output (crashes for me)
+library(vat)
+X = readLines('SO28_biol.prm')
+#test = X[grep('([^0-9]*[0-9]+[0-9\\.+-eE]*[^0-9]*[\\s]+[^0-9]*)[0-9]+.*', X)]
+X = gsub('([^0-9]*[0-9]+[0-9\\.+-eE]*[^0-9]*[\\s]+[^0-9]*)[0-9]+.*', '\\1', X, perl = TRUE)
+writeLines(X, 'vadt_biol.prm')
+create_vadt(outdir = 'output/', fgfile = 'AntarcticGroups.csv', biolprm = 'vadt_biol.prm', ncout = 'output', startyear = 1950, toutinc = 30)
+#
+#
+## shinyrAtlantis
+install.packages(c("shiny", 
+                 "dplyr", 
+                 "DT",
+                 "ggplot2",
+                 "ncdf4",
+                 "stringr"))
+#Install the package from Github with devtools.
+if (packageVersion("devtools") < 1.6) {
+  install.packages("devtools")
+}
+devtools::install_github("shanearichards/shinyrAtlantis")
+#Load and attach the package.
+library(shinyrAtlantis)
+
+# run sh.dist
+bgm.file <- "Antarctica_28.bgm"
+obj <- make.sh.dist.object(bgm.file)
+sh.dist(obj)
+
+# run sh.prm
+grp.file <- "AntarcticGroups.csv"
+prm.file <- "SO28_biol.prm"
+obj <- make.sh.prm.object(bgm.file, grp.file, prm.file)
+sh.prm(obj)
+
+# run sh.init
+nc.file <- "input.nc"
+obj <- make.sh.init.object(bgm.file, nc.file)
+sh.init(obj)
+
+# run sh.forcings
+salinity.file = "SOsaltdummy.nc"
+temperature.file = "SOtempdummy.nc"
+exchange.file = "SOhydrodummy.nc"
+maxz.layers <- c(-20,-50,-100,-200,-300,-400,-750,-1000,-2000,-Inf)
+cum.depth <- c(0, -maxz.layers[-10]) #c(0,5,10,20,50,100,200,3000)  # cumulative water layer depths
+input.object <- make.sh.forcings.object(
+  bgm.file         = bgm.file,
+  exchange.file    = exchange.file,
+  cum.depth        = cum.depth,
+  temperature.file = temperature.file,
+  salinity.file    = salinity.file
+)
+sh.forcings(input.object)
+
+
+```
