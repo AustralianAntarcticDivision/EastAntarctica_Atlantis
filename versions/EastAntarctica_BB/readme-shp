@@ -1,11 +1,6 @@
 ## copy the source shapefile and rename
-cp ../antarctica_28/* .
-rename -v 's/Antarctica_28/EastAntarctica_BB/' *
-#Antarctica_28.dbf renamed as EastAntarctica_BB.dbf
-#Antarctica_28.prj renamed as EastAntarctica_BB.prj
-#Antarctica_28.shp renamed as EastAntarctica_BB.shp
-#Antarctica_28.shx renamed as EastAntarctica_BB.shx
-#Antarctica_28.xml renamed as EastAntarctica_BB.xml
+ogr2ogr . -nln EastAntarctica_BB ../antarctica_28 Antarctica_28 -t_srs "+proj=laea +lat_0=-63 +lon_0=82 +x_0=2500000 +y_0=2000000 +ellps=WGS84 +units=m +no_defs" 
+
 
 ## transform the native (LAEA) shapefile to a longlat "_ll" copy
 
@@ -45,35 +40,4 @@ botz: Real (18.6)
 ogrinfo . EastAntarctica_BB -so
 INFO: Open of `.'
       using driver `ESRI Shapefile' successful.
-
-Layer name: EastAntarctica_BB
-Metadata:
-  DBF_DATE_LAST_UPDATE=2016-01-14
-Geometry: Polygon
-Feature Count: 28
-Extent: (-1991376.283293, -1049317.159886) - (1840092.199794, 1042353.868081)
-Layer SRS WKT:
-PROJCS["unnamed",
-    GEOGCS["GCS_WGS_1984",
-        DATUM["WGS_1984",
-            SPHEROID["WGS_84",6.378137e6,2.9825722356300156e2]],
-        PRIMEM["Greenwich",0.0],
-        UNIT["Degree",0.0174532925199433]],
-    PROJECTION["Lambert_Azimuthal_Equal_Area"],
-    PARAMETER["False_Easting",0],
-    PARAMETER["False_Northing",0],
-    PARAMETER["Longitude_Of_Center",82],
-    PARAMETER["Latitude_Of_Center",-63],
-    PARAMETER["Scale_Factor",1],
-    UNIT["Meter",1.0]]
-ID: Integer64 (18.0)
-cat: Integer64 (18.0)
-SHAPE_Leng: Real (18.6)
-SHAPE_Area: Real (18.6)
-box_id: Integer64 (18.0)
-boundary: Integer64 (18.0)
-vertmix: Real (18.6)
-horizmix: Real (18.6)
-label: String (20.0)
-botz: Real (18.6)
 
